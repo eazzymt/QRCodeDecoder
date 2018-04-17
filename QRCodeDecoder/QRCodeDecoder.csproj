@@ -62,7 +62,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="clsQRDecorder.cs" />
+    <Compile Include="ClsQRDecorder.cs" />
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>

@@ -38,14 +38,14 @@ namespace QRCodeDecoder
             }
 #endif
 
-            using (clsQRDecorder objDecoder = new clsQRDecorder(pbQrImg.ImageLocation))
+            using (ClsQRDecorder objDecoder = new ClsQRDecorder(pbQrImg.ImageLocation))
             {
-                if (objDecoder.judgeQRPtn())
+                if (objDecoder.JudgeQRPtn())
                 {
-                    objDecoder.decode();
+                    objDecoder.Decode();
 
                     ImageConverter imgCnv = new ImageConverter();
-                    pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.getTestImg());
+                    pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.GetTestImg());
                 }
                 else
                 {
