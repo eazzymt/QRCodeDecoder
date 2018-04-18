@@ -54,10 +54,10 @@ namespace QRCodeDecoder
             }
 
 #if AAA
-            using (clsQRDecorder objDecoder = new clsQRDecorder(pbQrImg.ImageLocation))
+            using (ClsQRDecorder objDecoder = new ClsQRDecorder(pbQrImg.ImageLocation))
             {
                 ImageConverter imgCnv = new ImageConverter();
-                pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.getTestImg());
+                pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.GetTestImg());
             }
 #endif
 

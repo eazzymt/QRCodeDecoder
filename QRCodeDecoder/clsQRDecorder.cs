@@ -4,7 +4,7 @@ using OpenCvSharp;
 
 namespace QRCodeDecoder
 {
-    internal class ClsQRDecorder : IDisposable
+    class ClsQRDecorder : IDisposable
     {
         #region 宣言
         enum LblIdxEnum
@@ -20,14 +20,43 @@ namespace QRCodeDecoder
             dirY
         }
 
+        // 基本仕様 表D.1
+        // 型番7以上の型番情報
+        int[] VerInfoAry = new int[] {
+            0x07C94,0x085BC,0x09A99,0x0A4D3, // 7～10
+            0x0BBF6,0x0C762,0x0D847,0x0E60D,0x0F928,0x10B78,0x1145D,0x12A17,0x13532,0x149A6, // 11～20
+            0x15683,0x168C9,0x177EC,0x18EC4,0x191E1,0x1AFAB,0x1B08E,0x1CC1A,0x1D33F,0x1ED75, // 21～30
+            0x1F250,0x209D5,0x216F0,0x228BA,0x2379F,0x24B0B,0x2542E,0x26A64,0x27541,0x28C69  // 31～40
+        };
+
+        // 基本仕様 表C.1
+        // 形式情報
+        // 有効ビット数：15bit
+        // 上位5bit：データビット
+        // 下位10bit：誤り訂正ビット
+        int[] FmtInfoAry = new int[] {
+            0x00000,0x01137,0x0226E,0x03359,0x041EB,0x050DC,0x06385,0x072B2,
+            0x083D6,0x092E1,0x0A1B8,0x0B08F,0x0C23D,0x0D30A,0x0E053,0x0F164,
+            0x1029B,0x113AC,0x120F5,0x131C2,0x14370,0x15247,0x1611E,0x17029,
+            0x1814D,0x1907A,0x1A323,0x1B214,0x1C0A6,0x1D191,0x1E2C8,0x1F3FF
+        };
+
         private const int quietPxl = 10;
+        private const int FmtInfoMask = 0x5413;
         private string imgPath;
         private int modPxl;
+        private int fndPtnTopLeft;
+        private int fndPtnTopRight;
+        //private int fndPtnBottom; // 使い途がありそうなら復活する
         private int qrCodeModNum;
         private int qrTop;
         private int qrLeft;
         private int qrPxl;
         private int qrVer;
+        private int qrMask;
+        private int qrErrLvl;
+        private byte[] encodeData;
+        private byte modBlk = 0; // 白黒反転画像の場合、255(白)を暗とする
 
         private Mat matQr;
         private Rect[] rctFinderPtn;
@@ -117,45 +146,56 @@ namespace QRCodeDecoder
                 }
             }
 
-            // 位置検出パターンの位置関係を修正(90°単位の回転)
-            return CorrectFinderPtnPos();
+            return true;
         }
 
         /// <summary>
         /// デコードメイン処理
         /// </summary>
-        public void Decode()
+        public byte[] Decode()
         {
-            // 基本仕様 12.a
-            // 各モジュールの明暗を取得する
-            GetModAry();
+            byte[] qrDecodeData;
 
             // 基本仕様 12.b
             // 形式情報を取得する
 
-            // 基本仕様 13.e
-            // １モジュールの大きさ、QRコード全体の大きさ(モジュールの縦横数)を求める
-            modPxl = (rctFinderPtn[0].Width + rctFinderPtn[1].Width) / 14; // 一応、仕様書通りの書き方をしておく(冗長だけど)
-            qrCodeModNum = qrPxl / modPxl;
+            // 基本仕様 12.e
+            // シンボルの公称Ｘ寸法(モジュールピクセルサイズ)を求める
+            modPxl = (rctFinderPtn[fndPtnTopLeft].Width + rctFinderPtn[fndPtnTopRight].Width) / 14; // 一応、仕様書通りの書き方をしておく(冗長だけど)
 
-            // 基本仕様 13.f
-            // 型番を求める(仮値)
-            int verTmp = (((rctFinderPtn[1].X - rctFinderPtn[0].X)) / modPxl - 10) / 4;
-            if (verTmp <= 6)
-            {
-                qrVer = verTmp; // 算出した仮値をそのまま採用
-            }
-            else
-            {
-                // 基本仕様 13.g
-                // 基本仕様 13.fで求めた値が7以上の場合、型番情報を取得して型番を算出する
-                qrVer = verTmp;
-            }
+            // 基本仕様 12.i
+            // 本来であれば歪みがあることを想定して、型番取得後にマトリックス情報を取得するが、
+            // 本実装では簡略化する
+            // 先にマトリックス情報を取得し、そこから型番情報を取得してしまう
+            qrPxl = rctFinderPtn[fndPtnTopRight].X + modPxl * 7 - rctFinderPtn[fndPtnTopLeft].X;
+            qrCodeModNum = qrPxl / modPxl;
+            qrLeft = rctFinderPtn[fndPtnTopLeft].X;
+            qrTop = rctFinderPtn[fndPtnTopLeft].Y;
+            GetModAry();
+
+            // 基本仕様 12.d,f,g
+            // 型番算出
+            GetVerInfo();
+            if (qrVer < 0) return null;
+
+            // 基本仕様 12.h
+            // 本来であれば歪みがあることを想定して位置合わせパターンの確認などを行うが、割愛
+
+            // 基本仕様 12.j
+            // 形式情報を復号する
+            GetFormatInfo();
+            if (qrMask < 0) return null;
+
+            // 基本情報 12.y
+            // 符号化領域のデータを取得してマスクパターンにてマスク解除する
+
+            qrDecodeData = new byte[1];
+            return qrDecodeData;
         }
         #endregion
 
         #region プライベートメソッド
-        #region 位置検出パターン判定
+        #region 画像処理（位置検出パターンの抽出→傾き補正→明暗データ取得）
         /// <summary>
         /// 指定矩形の２つの中線をスキャンして、位置検出パターンかどうか判定する
         /// </summary>
@@ -246,11 +286,11 @@ namespace QRCodeDecoder
                 bool modVal; // 黒=True
                 if (scanDir == ScanDirEnum.dirX)
                 {
-                    modVal = (matTarget.At<byte>(slvPos, mstPos) == 0);
+                    modVal = (matTarget.At<byte>(slvPos, mstPos) == modBlk);
                 }
                 else
                 {
-                    modVal = (matTarget.At<byte>(mstPos, slvPos) == 0);
+                    modVal = (matTarget.At<byte>(mstPos, slvPos) == modBlk);
                 }
 
                 // currintAry[aryIdx]には
@@ -284,6 +324,7 @@ namespace QRCodeDecoder
 
         /// <summary>
         /// 位置検出パターンを取得
+        /// 基本仕様 12.b
         /// </summary>
         /// <param name="matOrg"></param>
         /// <returns></returns>
@@ -339,22 +380,22 @@ namespace QRCodeDecoder
                 CompareVal(rctCandid[0].Size.Width, rctCandid[1].Size.Width) != 0 ||
                 CompareVal(rctCandid[1].Size.Width, rctCandid[2].Size.Width) != 0) return null;
             double dAngle = Math.Abs(rctCandid[0].Angle - rctCandid[1].Angle);
-            if (CompareVal(dAngle, 0.0) != 0 ||
-                CompareVal(dAngle, Math.PI * 0.5) != 0 ||
-                CompareVal(dAngle, Math.PI) != 0 ||
-                CompareVal(dAngle, Math.PI * 1.5) != 0 ||
+            if (CompareVal(dAngle, 0.0) != 0 &&
+                CompareVal(dAngle, Math.PI * 0.5) != 0 &&
+                CompareVal(dAngle, Math.PI) != 0 &&
+                CompareVal(dAngle, Math.PI * 1.5) != 0 &&
                 CompareVal(dAngle, Math.PI * 2.0) != 0) return null;
             dAngle = Math.Abs(rctCandid[1].Angle - rctCandid[2].Angle);
-            if (CompareVal(dAngle, 0.0) != 0 ||
-                CompareVal(dAngle, Math.PI * 0.5) != 0 ||
-                CompareVal(dAngle, Math.PI) != 0 ||
-                CompareVal(dAngle, Math.PI * 1.5) != 0 ||
+            if (CompareVal(dAngle, 0.0) != 0 &&
+                CompareVal(dAngle, Math.PI * 0.5) != 0 &&
+                CompareVal(dAngle, Math.PI) != 0 &&
+                CompareVal(dAngle, Math.PI * 1.5) != 0 &&
                 CompareVal(dAngle, Math.PI * 2.0) != 0) return null;
             dAngle = Math.Abs(rctCandid[2].Angle - rctCandid[0].Angle);
-            if (CompareVal(dAngle, 0.0) != 0 ||
-                CompareVal(dAngle, Math.PI * 0.5) != 0 ||
-                CompareVal(dAngle, Math.PI) != 0 ||
-                CompareVal(dAngle, Math.PI * 1.5) != 0 ||
+            if (CompareVal(dAngle, 0.0) != 0 &&
+                CompareVal(dAngle, Math.PI * 0.5) != 0 &&
+                CompareVal(dAngle, Math.PI) != 0 &&
+                CompareVal(dAngle, Math.PI * 1.5) != 0 &&
                 CompareVal(dAngle, Math.PI * 2.0) != 0) return null;
 
             return rctCandid;
@@ -372,9 +413,9 @@ namespace QRCodeDecoder
             double rightAngle;
 
             // 【検証】
-            // ３つの正方形の中心を結ぶ正三角形は直角二等辺三角形である
+            // ３つの正方形の中心を結ぶ正三角形は直角二等辺三角形であること
             // 【補正角度】
-            // 直角となる頂点が右上になるように回転する
+            // その直角二等辺三角形の直角となる頂点が右上になるように回転する
             double len01 = Math.Sqrt(
                 Math.Pow(rctRot[0].Center.X - rctRot[1].Center.X, 2.0) +
                 Math.Pow(rctRot[0].Center.Y - rctRot[1].Center.Y, 2.0));
@@ -385,55 +426,73 @@ namespace QRCodeDecoder
                 Math.Pow(rctRot[2].Center.X - rctRot[0].Center.X, 2.0) +
                 Math.Pow(rctRot[2].Center.Y - rctRot[0].Center.Y, 2.0));
 
-            if (CompareVal(len01, len20) == 0 && CompareVal(len01, len20 * Math.Sqrt(2)) == 0)
+            if (CompareVal(len01, len20) == 0 && CompareVal(len01 * Math.Sqrt(2.0), len12) == 0)
             {
-                // 要素０で直角（右上）
+                // 要素０で直角（左上）
                 rightAngle = GetAngle(rctRot[0].Center, rctRot[1].Center, rctRot[2].Center);
+                fndPtnTopLeft = 0;
                 if (CompareVal(rightAngle, Math.PI * 0.5) == 0)
                 {
                     // 求めた角が90°
-                    // 要素１：左上、要素２：右下
+                    // 要素１：右上、要素２：下
                     // [0][1]
                     // [2]
                     // 要素０→要素１へのベクトルを水平になるように補正する
-                    angle = -GetAngle(rctRot[0].Center, rctRot[1].Center);
+                    // Y軸が下向きなので、補正角を×（－１）する必要はない
+                    angle = GetAngle(rctRot[0].Center, rctRot[1].Center);
+                    fndPtnTopRight = 1;
+                    //fndPtnBottom = 2;
                 }
                 else
                 {
                     // 求めた角が270°
-                    // 要素２：左上、要素１：右下
+                    // 要素２：右上、要素１：下
                     // [0][2]
                     // [1]
                     // 要素０→要素２へのベクトルを水平になるように補正する
-                    angle = -GetAngle(rctRot[0].Center, rctRot[2].Center);
+                    angle = GetAngle(rctRot[0].Center, rctRot[2].Center);
+                    fndPtnTopRight = 2;
+                    //fndPtnBottom = 1;
                 }
             }
-            else if (CompareVal(len01, len12) == 0 && CompareVal(len01, len20 * Math.Sqrt(2)) == 0)
+            else if (CompareVal(len01, len12) == 0 && CompareVal(len01 * Math.Sqrt(2.0), len20) == 0)
             {
-                // 要素１で直角（右上）
+                // 要素１で直角（左上）
+                fndPtnTopLeft = 1;
+
                 // 以下、同様に処理する
                 rightAngle = GetAngle(rctRot[1].Center, rctRot[0].Center, rctRot[2].Center);
                 if (CompareVal(rightAngle, Math.PI * 0.5) == 0)
                 {
-                    angle = -GetAngle(rctRot[1].Center, rctRot[0].Center);
+                    angle = GetAngle(rctRot[1].Center, rctRot[0].Center);
+                    fndPtnTopRight = 0;
+                    //fndPtnBottom = 2;
                 }
                 else
                 {
-                    angle = -GetAngle(rctRot[1].Center, rctRot[2].Center);
+                    angle = GetAngle(rctRot[1].Center, rctRot[2].Center);
+                    fndPtnTopRight = 2;
+                    //fndPtnBottom = 0;
                 }
             }
-            else if (CompareVal(len01, len12) == 0 && CompareVal(len01, len20 * Math.Sqrt(2)) == 0)
+            else if (CompareVal(len12, len20) == 0 && CompareVal(len12 * Math.Sqrt(2.0), len01) == 0)
             {
-                // 要素２で直角（右上）
+                // 要素２で直角（左上）
+                fndPtnTopLeft = 2;
+
                 // 以下、同様に処理する
                 rightAngle = GetAngle(rctRot[2].Center, rctRot[0].Center, rctRot[1].Center);
                 if (CompareVal(rightAngle, Math.PI * 0.5) == 0)
                 {
-                    angle = -GetAngle(rctRot[2].Center, rctRot[0].Center);
+                    angle = GetAngle(rctRot[2].Center, rctRot[0].Center);
+                    fndPtnTopRight = 0;
+                    //fndPtnBottom = 1;
                 }
                 else
                 {
-                    angle = -GetAngle(rctRot[2].Center, rctRot[1].Center);
+                    angle = GetAngle(rctRot[2].Center, rctRot[1].Center);
+                    fndPtnTopRight = 1;
+                    //fndPtnBottom = 0;
                 }
             }
             else
@@ -446,6 +505,7 @@ namespace QRCodeDecoder
 
         /// <summary>
         /// 画像データを指定角度回転する
+        /// 基本仕様 12.c
         /// </summary>
         /// <param name="matOrg"></param>
         /// <param name="deg"></param>
@@ -457,7 +517,7 @@ namespace QRCodeDecoder
             // 傾き角、回転中央座標を算出
             // ※各位置検出パターンの角度は（傾き角度×－１）となっている
             //double angle = (rctRot[0].Angle + rctRot[1].Angle + rctRot[2].Angle) / 3.0;
-            double angle = GetRotAngle(rctRot);
+            double angle = GetRotAngle(rctRot) / Math.PI * 180.0;
             Point2f cenPt = new Point2f(matOrg.Cols / 2, matOrg.Rows / 2);
             using (Mat matAff = Cv2.GetRotationMatrix2D(cenPt, angle, 1.0))
             {
@@ -498,122 +558,6 @@ namespace QRCodeDecoder
         }
 
         /// <summary>
-        /// ３つの位置検出パターンの位置関係を求めて、回転する
-        /// </summary>
-        /// <returns></returns>
-        private bool CorrectFinderPtnPos()
-        {
-            int[,] idx = new int[,]{
-            {0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}
-            }; // 全組み合わせ
-
-            for (int loopCnt = 0; loopCnt < idx.GetLength(0) * idx.GetLength(1); loopCnt++)
-            {
-                int rotResult = ExecCorrectFinderPtn(idx[loopCnt, 0], idx[loopCnt, 1], idx[loopCnt, 2]);
-                if (rotResult == 0)
-                {
-                    // 位置検出パターンが確定したので、QR画像右上座標、縦横画素数を取得
-                    qrTop = rctFinderPtn[idx[loopCnt, 0]].Top;
-                    qrLeft = rctFinderPtn[idx[loopCnt, 0]].Left;
-                    qrPxl = rctFinderPtn[idx[loopCnt, 1]].Left + rctFinderPtn[idx[loopCnt, 1]].Width - qrLeft;
-                    return true;
-                }
-                else if (rotResult == -1)
-                {
-                    return false;
-                }
-                // 1が返ってきた場合、次の組み合わせへ
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// ３つの位置検出パターンの位置関係を求めて、回転する(実処理)
-        /// 位置検出パターン自体も回転する
-        /// </summary>
-        /// <param name="i0"></param>
-        /// <param name="i1"></param>
-        /// <param name="i2"></param>
-        /// <returns>傾き補正は済んでいるので、90dec毎の回転のみ</returns>
-        private int ExecCorrectFinderPtn(int i0, int i1, int i2)
-        {
-            // 3つのパターンの位置関係を確認する(左上原点)
-
-            // [0][1]
-            // [2][-]
-            if (CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i1].Y) == 0 &&
-                CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i2].X) == 0 &&
-                CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i1].X) == -1 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i2].Y) == -1)
-            {
-                if (CompareVal(rctFinderPtn[i1].Y - rctFinderPtn[i0].Y, rctFinderPtn[i2].X - rctFinderPtn[i0].X) != 0) return -1;
-                return 0; // 回転不要
-            }
-            // [-][2]       [0][1]
-            // [1][0]→rot→[2][-]
-            else if (CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i2].X) == 0 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i1].Y) == 0 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i2].Y) == 1 &&
-                CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i1].X) == 1)
-            {
-                if (CompareVal(rctFinderPtn[i0].X - rctFinderPtn[i1].X, rctFinderPtn[i0].Y - rctFinderPtn[i2].Y) != 0) return -1;
-                // 180deg 回転(X軸回転＋Y軸回転)
-                using (Mat workMat = new Mat())
-                {
-                    Cv2.Flip(matQr, workMat, FlipMode.XY);
-                    matQr = workMat.Clone();
-                }
-                rctFinderPtn[i0] = new Rect(rctFinderPtn[i1].X, rctFinderPtn[i2].Y, rctFinderPtn[i0].Width, rctFinderPtn[i0].Height);
-               
-                return 0;
-            }
-            // [2][0]       [0][1]
-            // [-][1]→rot→[2][-]
-            else if (CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i1].X) == 0 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i2].Y) == 0 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i1].Y) == -1 &&
-                CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i2].X) == 1)
-            {
-                if (CompareVal(rctFinderPtn[i0].Y - rctFinderPtn[i1].Y, rctFinderPtn[i2].X - rctFinderPtn[i0].X) != 0) return -1;
-                // 90deg 回転(転置＋X軸回転)
-                using (Mat workMat = new Mat())
-                {
-                    Cv2.Flip(matQr.Transpose(), workMat, FlipMode.X);
-                    matQr = workMat.Clone();
-                }
-                rctFinderPtn[i2] = new Rect(rctFinderPtn[i2].X, rctFinderPtn[i1].Y, rctFinderPtn[i2].Width, rctFinderPtn[i2].Height);
-                rctFinderPtn[i1] = new Rect(rctFinderPtn[i1].X, rctFinderPtn[i0].Y, rctFinderPtn[i1].Width, rctFinderPtn[i1].Height);
-                rctFinderPtn[i0] = new Rect(rctFinderPtn[i2].X, rctFinderPtn[i0].Y, rctFinderPtn[i0].Width, rctFinderPtn[i0].Height);
-
-                return 0;
-            }
-            // [1][-]       [0][1]
-            // [0][2]→rot→[2][-]
-            else if (CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i1].X) == 0 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i2].Y) == 0 &&
-                CompareVal(rctFinderPtn[i0].Y, rctFinderPtn[i1].Y) == 1 &&
-                CompareVal(rctFinderPtn[i0].X, rctFinderPtn[i2].X) == -1)
-            {
-                if (CompareVal(rctFinderPtn[i0].Y - rctFinderPtn[i1].Y, rctFinderPtn[i2].X - rctFinderPtn[i0].X) != 0) return -1;
-                //270deg 回転(転置＋Y軸回転)
-                using (Mat workMat = new Mat())
-                {
-                    Cv2.Flip(matQr.Transpose(), workMat, FlipMode.Y);
-                    matQr = workMat.Clone();
-                }
-                rctFinderPtn[i1] = new Rect(rctFinderPtn[i2].X, rctFinderPtn[i1].Y, rctFinderPtn[i1].Width, rctFinderPtn[i1].Height);
-                rctFinderPtn[i0] = new Rect(rctFinderPtn[i0].X, rctFinderPtn[i1].Y, rctFinderPtn[i0].Width, rctFinderPtn[i0].Height);
-                rctFinderPtn[i2] = new Rect(rctFinderPtn[i0].X, rctFinderPtn[i2].Y, rctFinderPtn[i2].Width, rctFinderPtn[i2].Height);
-
-                return 0;
-            }
-            else
-            {
-                return 1; // いずれでもないので、i0～i2を入れ替えて試す
-            }
-        }
-
-        /// <summary>
         /// 多色画像データをもとに、２値画像データを生成
         /// </summary>
         /// <param name="matColor"></param>
@@ -631,13 +575,8 @@ namespace QRCodeDecoder
 
             return matBin;
         }
-        #endregion
 
-        #region エラー訂正符号(BCH)
-        #endregion
-
-        #region その他
-        /// <summary>
+                /// <summary>
         /// モジュール明暗情報を取得
         /// </summary>
         /// <remarks>基本仕様 12.a</remarks>
@@ -654,7 +593,7 @@ namespace QRCodeDecoder
                     Mat rctMat = new Mat(matQr, rctCut);
                     Size sz1px = new Size(1, 1);
                     Mat mat1px = rctMat.Resize(sz1px, 0, 0, InterpolationFlags.Cubic);
-                    modAry[cntX, cntY] = (mat1px.At<byte>(0, 0) == 0); // 黒をTrueとする
+                    modAry[cntX, cntY] = (mat1px.At<byte>(0, 0) == modBlk); // 黒をTrueとする
                 }
             }
         }
@@ -740,6 +679,195 @@ namespace QRCodeDecoder
         private double GetAngle(Point2f p1, Point2f p2)
         {
             return Math.Atan2(p2.Y - p1.Y, p2.X - p1.X);
+        }
+        #endregion
+
+        #region エラー訂正符号(BCH)
+        /// <summary>
+        /// 型番情報を復号
+        /// </summary>
+        /// <param name="verInfo"></param>
+        /// <returns></returns>
+        private int DecodeVerInfo(bool[] verInfo)
+        {
+            int verVal = -1;
+
+            // ビット(bool)配列→数値(18bit幅)に変換
+            for (int cnt = 17; cnt <= 0; cnt--)
+            {
+                verVal = verVal << 1;
+                if (verInfo[cnt]) verVal++;
+            }
+
+            // ハミング距離が4未満の型番情報をみつける
+            // 正しい型番情報はハミング距離が8なので、正しい型番情報はハミング情報が4未満のはず
+            for (int cnt = 0; cnt < VerInfoAry.Length; cnt++)
+            {
+                int errCnt = VerInfoAry[cnt] ^ verVal;
+                if (CountBits(errCnt) < 4)
+                {
+                    verVal = cnt + 7;
+                    break;
+                }
+                
+            }
+
+            return verVal;
+        }
+
+        /// <summary>
+        /// 形式情報を復号
+        /// </summary>
+        /// <param name="fmtInfo"></param>
+        /// <returns></returns>
+        private int DecodeFormatInfo(bool[] fmtInfo)
+        {
+            int fmtVal = -1;
+
+            // ビット(bool)配列→数値(15bit幅)に変換
+            for (int cnt = 14; cnt <= 0; cnt--)
+            {
+                fmtVal = fmtVal << 1;
+                if (fmtInfo[cnt]) fmtVal++;
+            }
+
+            // ハミング距離が3以下の形式情報を見つける
+            // 正しい形式情報はハミング距離が7なので、正しい形式情報はハミング情報が3以下のはず
+            for (int cnt = 0; cnt < FmtInfoAry.Length; cnt++)
+            {
+                int errCnt = FmtInfoAry[cnt] ^ fmtVal;
+                if (CountBits(errCnt) < 4)
+                {
+                    fmtVal = cnt;
+                    break;
+                }
+            }
+
+                return fmtVal;
+        }
+
+        /// <summary>
+        /// 立っているビットの数を数える
+        /// </summary>
+        /// <param name="val"></param>
+        /// <returns></returns>
+        private int CountBits(int val)
+        {
+            int bits = val;
+            bits = (bits & 0x55555555) + ((bits >> 1) & 0x55555555);
+            bits = (bits & 0x33333333) + ((bits >> 2) & 0x33333333);
+            bits = (bits & 0x0F0F0F0F) + ((bits >> 4) & 0x0F0F0F0F);
+            bits = (bits & 0x00FF00FF) + ((bits >> 8) & 0x00FF00FF);
+            bits = (bits & 0x0000FFFF) + ((bits >> 16) & 0x0000FFFF);
+
+            return bits;
+        }
+        #endregion
+
+        #region その他
+        /// <summary>
+        /// 型番情報を算出
+        /// 基本仕様 12.d,12.f,12.g
+        /// </summary>
+        private void GetVerInfo()
+        {
+            qrVer = -1;
+
+            // 基本仕様 12.d
+            // シンボルの全幅を横切る、左上の位置検出パターン及び右上の位置検出パターンの中心間の距離Ｄを求める
+            int dstFndPtn = rctFinderPtn[fndPtnTopRight].X - rctFinderPtn[fndPtnTopLeft].X;
+
+            // 基本仕様 12.f
+            // シンボルの型番を仮に決める
+            int verTmp = ((dstFndPtn / modPxl) - 10) / 4;
+
+            // 基本仕様 12.g
+            // 仮のシンボル型番が６以下の場合、この値を型番として使用する
+            // ７以上の場合は型番情報を復号する
+            if (verTmp <= 6)
+            {
+                qrVer = verTmp;
+            }
+            else
+            {
+                // 型番情報１を復号する
+                qrVer = GetVerInfo(1);
+                if (qrVer < 0)
+                {
+                    // 型番情報１が訂正不能→型番情報２を復号する
+                    qrVer = GetVerInfo(2);
+                    if (qrVer < 0) return;
+                }
+                qrVer = verTmp;
+            }
+        }
+
+        /// <summary>
+        /// 型番情報を復号して、型番算出
+        /// 基本仕様 12.g.1～4
+        /// </summary>
+        /// <param name="verKind"></param>
+        /// <returns></returns>
+        private int GetVerInfo(int verKind)
+        {
+            bool[] verInfo = new bool[6 * 3];
+
+            // 基本仕様 12.g.1は取得済
+
+            // 基本仕様 12.g.2
+            // 型番情報の位置を求める
+            int startPos = (rctFinderPtn[fndPtnTopRight].X / modPxl) - 4;
+
+            int modCnt = 0;
+            for (int cnt1 = 0; cnt1 < 6; cnt1++)
+            {
+                for (int cnt2 = 0; cnt2 < 3; cnt2++)
+                {
+                    if (verKind == 1)
+                    {
+                        // 基本仕様 12.g.3
+                        // 型番情報１（右上の型番情報）より型番を決定する
+                        verInfo[modCnt] = modAry[cnt2 + startPos, cnt1];
+                    }
+                    else
+                    {
+                        // 基本仕様 12.g.4
+                        // 型番情報１が訂正不能だった場合、型番情報２（左下の型番情報）より型番を決定する
+                        verInfo[modCnt] = modAry[cnt1, cnt2 + startPos];
+                    }
+                }
+            }
+
+            return DecodeVerInfo(verInfo);
+        }
+
+        /// <summary>
+        /// 形式情報算出
+        /// </summary>
+        private void GetFormatInfo()
+        {
+            qrMask = -1;
+            qrErrLvl = -1;
+
+            // 形式情報１を復号する
+            int fmtInfo = GetFormatInfo(1);
+            if (fmtInfo < 0)
+            {
+                // 形式情報２を復号する
+                fmtInfo = GetFormatInfo(2);
+                if (fmtInfo < 0) return;
+            }
+
+            // マスクを外して、マスクパターン、誤り訂正レベルを取得
+            fmtInfo ^= FmtInfoMask;
+            qrMask = fmtInfo >> 3;
+            qrErrLvl = fmtInfo & 0x08;
+        }
+
+        private int GetFormatInfo(int fKind)
+        {
+
+            return 0;
         }
         #endregion
         #endregion
