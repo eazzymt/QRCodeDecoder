@@ -288,3 +288,4 @@ __pycache__/
 *.xsd.cs
 QR.jpg
 QR_rot.jpg
+回転後画像（位置検出パターン取得）.bmp

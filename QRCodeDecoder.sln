@@ -3,7 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2013
 VisualStudioVersion = 12.0.40629.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "QRCodeDecoder", "QRCodeDecoder\QRCodeDecoder.csproj", "{EAAD2872-5D4E-4BDE-B1ED-10E1B3C94BD5}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ClsQRCodeDecoder", "QRCodeDecoder\ClsQRCodeDecoder.csproj", "{EAAD2872-5D4E-4BDE-B1ED-10E1B3C94BD5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "testForm", "testForm\testForm.csproj", "{8C860683-6CA8-4E2B-A061-5097C4D877FE}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +17,10 @@ Global
 		{EAAD2872-5D4E-4BDE-B1ED-10E1B3C94BD5}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EAAD2872-5D4E-4BDE-B1ED-10E1B3C94BD5}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EAAD2872-5D4E-4BDE-B1ED-10E1B3C94BD5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8C860683-6CA8-4E2B-A061-5097C4D877FE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C860683-6CA8-4E2B-A061-5097C4D877FE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C860683-6CA8-4E2B-A061-5097C4D877FE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C860683-6CA8-4E2B-A061-5097C4D877FE}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

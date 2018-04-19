@@ -4,24 +4,27 @@ using OpenCvSharp;
 
 namespace QRCodeDecoder
 {
-    class ClsQRDecorder : IDisposable
+    public class ClsQRCodeDecorder : IDisposable
     {
         #region 宣言
-        enum LblIdxEnum
+        enum lblIdxEnum
         {
             posX = 0,
             posY,
             width,
             height
         }
-        enum ScanDirEnum
+        enum scanDirEnum
         {
             dirX,
             dirY
         }
 
         // 基本仕様 表D.1
-        // 型番7以上の型番情報
+        // 型番7以上の型番情報(BCH符号)
+        // 有効ビット数：16bit
+        // データビット：上位4bit
+        // 誤り訂正ビット：下位12bit
         int[] VerInfoAry = new int[] {
             0x07C94,0x085BC,0x09A99,0x0A4D3, // 7～10
             0x0BBF6,0x0C762,0x0D847,0x0E60D,0x0F928,0x10B78,0x1145D,0x12A17,0x13532,0x149A6, // 11～20
@@ -30,15 +33,15 @@ namespace QRCodeDecoder
         };
 
         // 基本仕様 表C.1
-        // 形式情報
+        // 形式情報(BCH符号)
         // 有効ビット数：15bit
-        // 上位5bit：データビット
-        // 下位10bit：誤り訂正ビット
+        // データビット：上位5bit
+        // 誤り訂正ビット：下位10bit
         int[] FmtInfoAry = new int[] {
-            0x00000,0x01137,0x0226E,0x03359,0x041EB,0x050DC,0x06385,0x072B2,
-            0x083D6,0x092E1,0x0A1B8,0x0B08F,0x0C23D,0x0D30A,0x0E053,0x0F164,
-            0x1029B,0x113AC,0x120F5,0x131C2,0x14370,0x15247,0x1611E,0x17029,
-            0x1814D,0x1907A,0x1A323,0x1B214,0x1C0A6,0x1D191,0x1E2C8,0x1F3FF
+            0x0000,0x0537,0x0A6E,0x0F59,0x11EB,0x14DC,0x1B85,0x1EB2,
+            0x23D6,0x26E1,0x29B8,0x2C8F,0x323D,0x370A,0x3853,0x3D64,
+            0x429B,0x47AC,0x48F5,0x4DC2,0x5370,0x5647,0x591E,0x5C29,
+            0x614D,0x647A,0x6B23,0x6E14,0x70A6,0x7591,0x7AC8,0x7FFF
         };
 
         private const int quietPxl = 10;
@@ -70,7 +73,7 @@ namespace QRCodeDecoder
         /// コンストラクタ
         /// </summary>
         /// <param name="imgPath"></param>
-        public ClsQRDecorder(string imgPath)
+        public ClsQRCodeDecorder(string imgPath)
         {
             this.imgPath = imgPath;
             matQr = null;
@@ -80,7 +83,7 @@ namespace QRCodeDecoder
         /// <summary>
         /// デストラクタ
         /// </summary>
-        ~ClsQRDecorder(){
+        ~ClsQRCodeDecorder(){
             this.Dispose();
         }
         #endregion
@@ -116,48 +119,14 @@ namespace QRCodeDecoder
         }
 
         /// <summary>
-        /// 傾き補正→QRコード判定
-        /// </summary>
-        /// <returns></returns>
-        public bool JudgeQRPtn()
-        {
-            List<RotatedRect> rctCandid;
-            using (Mat matLoad = new Mat(imgPath))
-            {
-                rctCandid = GetFinderPtn(matLoad);
-                if (rctCandid == null) return false;
-
-                // 位置検出パターンが３つ見つかったので、傾き補正する
-                using (Mat matRotCol = RotMat(matLoad, rctCandid))
-                {
-                    // 回転後の位置検出パターンを探す
-                    // 回転(Affine)行列の計算で位置検出パターンを算出すると少しずれるので、もう１度、位置検出パターン検索処理を使う
-                    rctCandid = GetFinderPtn(matRotCol);
-                    if (rctCandid == null) return false;
-
-                    for (int cnt = 0; cnt < rctCandid.Count; cnt++)
-                    {
-                        double ptX = rctCandid[cnt].Center.X - rctCandid[cnt].Size.Width / 2.0;
-                        double ptY = rctCandid[cnt].Center.Y - rctCandid[cnt].Size.Height / 2.0;
-                        Point pt = new Point(ptX, ptY);
-                        rctFinderPtn[cnt] = new Rect(pt, new Size(rctCandid[cnt].Size.Width, rctCandid[cnt].Size.Height));
-                    }
-                    matQr = GetBinMat(matRotCol);
-                }
-            }
-
-            return true;
-        }
-
-        /// <summary>
         /// デコードメイン処理
         /// </summary>
         public byte[] Decode()
         {
             byte[] qrDecodeData;
 
-            // 基本仕様 12.b
-            // 形式情報を取得する
+            // 傾き補正、QRコードであることを確認、位置検出パターンの取得
+            if (!JudgeQRPtn()) return null;
 
             // 基本仕様 12.e
             // シンボルの公称Ｘ寸法(モジュールピクセルサイズ)を求める
@@ -184,7 +153,7 @@ namespace QRCodeDecoder
             // 基本仕様 12.j
             // 形式情報を復号する
             GetFormatInfo();
-            if (qrMask < 0) return null;
+            if (qrMask < 0 || qrErrLvl < 0) return null;
 
             // 基本情報 12.y
             // 符号化領域のデータを取得してマスクパターンにてマスク解除する
@@ -196,6 +165,41 @@ namespace QRCodeDecoder
 
         #region プライベートメソッド
         #region 画像処理（位置検出パターンの抽出→傾き補正→明暗データ取得）
+        /// <summary>
+        /// 傾き補正→QRコード判定
+        /// </summary>
+        /// <returns></returns>
+        private bool JudgeQRPtn()
+        {
+            List<RotatedRect> rctCandid;
+            using (Mat matLoad = new Mat(imgPath))
+            {
+                rctCandid = GetFinderPtn(matLoad);
+                if (rctCandid == null) return false;
+
+                // 位置検出パターンが３つ見つかったので、傾き補正する
+                using (Mat matRotCol = RotMat(matLoad, rctCandid))
+                {
+                    // 回転後の位置検出パターンを探す
+                    // 回転(Affine)行列の計算で位置検出パターンを算出すると少しずれるので、もう１度、位置検出パターン検索処理を使う
+                    rctCandid = GetFinderPtn(matRotCol);
+
+                    if (rctCandid == null) return false;
+                    GetRotAngle(rctCandid); // 配列が変わったので、要素番号取り直しのため、実行する
+                    for (int cnt = 0; cnt < rctCandid.Count; cnt++)
+                    {
+                        double ptX = rctCandid[cnt].Center.X - rctCandid[cnt].Size.Width / 2.0;
+                        double ptY = rctCandid[cnt].Center.Y - rctCandid[cnt].Size.Height / 2.0;
+                        Point pt = new Point(ptX, ptY);
+                        rctFinderPtn[cnt] = new Rect(pt, new Size(rctCandid[cnt].Size.Width, rctCandid[cnt].Size.Height));
+                    }
+                    matQr = GetBinMat(matRotCol);
+                }
+            }
+
+            return true;
+        }
+
         /// <summary>
         /// 指定矩形の２つの中線をスキャンして、位置検出パターンかどうか判定する
         /// </summary>
@@ -225,13 +229,13 @@ namespace QRCodeDecoder
         /// <returns></returns>
         private int[] ScanPxlSeries(Mat matTarget, Point2f pt1, Point2f pt2){
             float stMst, stSlv, edMst, edSlv;
-            ScanDirEnum scanDir;
+            scanDirEnum scanDir;
 
             // XとYのどちらを独立変数にするか決める
             // 差分が大きい方を独立変数とする
             if (Math.Abs(pt1.X - pt2.X) < Math.Abs(pt1.Y - pt2.Y))
             {
-                scanDir = ScanDirEnum.dirY;
+                scanDir = scanDirEnum.dirY;
                 // 始点・終点を決める
                 if (pt1.Y < pt2.Y)
                 {
@@ -252,7 +256,7 @@ namespace QRCodeDecoder
             }
             else
             {
-                scanDir = ScanDirEnum.dirX;
+                scanDir = scanDirEnum.dirX;
                 if (pt1.X < pt2.X)
                 {
                     // 独立変数：X、始点：pt1、終点：pt2
@@ -284,7 +288,7 @@ namespace QRCodeDecoder
             {
                 int slvPos = (int)(mstPos * col + v0);
                 bool modVal; // 黒=True
-                if (scanDir == ScanDirEnum.dirX)
+                if (scanDir == scanDirEnum.dirX)
                 {
                     modVal = (matTarget.At<byte>(slvPos, mstPos) == modBlk);
                 }
@@ -558,7 +562,7 @@ namespace QRCodeDecoder
         }
 
         /// <summary>
-        /// 多色画像データをもとに、２値画像データを生成
+        /// 多色画像あるいはグレースケール画像データをもとに、２値画像データを生成
         /// </summary>
         /// <param name="matColor"></param>
         /// <returns></returns>
@@ -569,8 +573,15 @@ namespace QRCodeDecoder
             {
                 // 基本仕様 12.a
                 // 最大値(=255)、最小値(=0)の中間値を閾値として２値画像を生成する
-                Cv2.CvtColor(matColor, matGray, ColorConversionCodes.BGR2GRAY);
-                matBin =  matGray.Threshold(255 / 2.0, 255, ThresholdTypes.Binary);
+                if (matColor.Type() != MatType.CV_8UC1)
+                {
+                    Cv2.CvtColor(matColor, matGray, ColorConversionCodes.BGR2GRAY);
+                    matBin = matGray.Threshold(255 / 2.0, 255, ThresholdTypes.Binary);
+                }
+                else
+                {
+                    matBin = matColor.Threshold(255 / 2.0, 255, ThresholdTypes.Binary);
+                }
             }
 
             return matBin;
@@ -590,9 +601,9 @@ namespace QRCodeDecoder
                 {
                     // 各モジュール画像を縦横１ピクセルの画像に圧縮して、明暗を判別する
                     Rect rctCut = new Rect(qrLeft + cntX * modPxl, qrTop + cntY * modPxl, modPxl, modPxl);
-                    Mat rctMat = new Mat(matQr, rctCut);
+                    Mat matRct = new Mat(matQr, rctCut);
                     Size sz1px = new Size(1, 1);
-                    Mat mat1px = rctMat.Resize(sz1px, 0, 0, InterpolationFlags.Cubic);
+                    Mat mat1px = GetBinMat(matRct.Resize(sz1px, 0, 0, InterpolationFlags.Cubic));
                     modAry[cntX, cntY] = (mat1px.At<byte>(0, 0) == modBlk); // 黒をTrueとする
                 }
             }
@@ -690,10 +701,10 @@ namespace QRCodeDecoder
         /// <returns></returns>
         private int DecodeVerInfo(bool[] verInfo)
         {
-            int verVal = -1;
+            int verVal = 0;
 
             // ビット(bool)配列→数値(18bit幅)に変換
-            for (int cnt = 17; cnt <= 0; cnt--)
+            for (int cnt = 17; cnt >= 0; cnt--)
             {
                 verVal = verVal << 1;
                 if (verInfo[cnt]) verVal++;
@@ -704,15 +715,14 @@ namespace QRCodeDecoder
             for (int cnt = 0; cnt < VerInfoAry.Length; cnt++)
             {
                 int errCnt = VerInfoAry[cnt] ^ verVal;
-                if (CountBits(errCnt) < 4)
+                if (countBits(errCnt) < 4)
                 {
-                    verVal = cnt + 7;
-                    break;
+                    return VerInfoAry[cnt] >> 12;
                 }
                 
             }
 
-            return verVal;
+            return -1;
         }
 
         /// <summary>
@@ -722,10 +732,10 @@ namespace QRCodeDecoder
         /// <returns></returns>
         private int DecodeFormatInfo(bool[] fmtInfo)
         {
-            int fmtVal = -1;
+            int fmtVal = 0;
 
             // ビット(bool)配列→数値(15bit幅)に変換
-            for (int cnt = 14; cnt <= 0; cnt--)
+            for (int cnt = 14; cnt >= 0; cnt--)
             {
                 fmtVal = fmtVal << 1;
                 if (fmtInfo[cnt]) fmtVal++;
@@ -736,14 +746,13 @@ namespace QRCodeDecoder
             for (int cnt = 0; cnt < FmtInfoAry.Length; cnt++)
             {
                 int errCnt = FmtInfoAry[cnt] ^ fmtVal;
-                if (CountBits(errCnt) < 4)
+                if (countBits(errCnt) < 4)
                 {
-                    fmtVal = cnt;
-                    break;
+                    return FmtInfoAry[cnt] >> 10;
                 }
             }
 
-                return fmtVal;
+            return -1;
         }
 
         /// <summary>
@@ -751,7 +760,7 @@ namespace QRCodeDecoder
         /// </summary>
         /// <param name="val"></param>
         /// <returns></returns>
-        private int CountBits(int val)
+        private int countBits(int val)
         {
             int bits = val;
             bits = (bits & 0x55555555) + ((bits >> 1) & 0x55555555);
@@ -798,7 +807,6 @@ namespace QRCodeDecoder
                     qrVer = GetVerInfo(2);
                     if (qrVer < 0) return;
                 }
-                qrVer = verTmp;
             }
         }
 
@@ -816,7 +824,7 @@ namespace QRCodeDecoder
 
             // 基本仕様 12.g.2
             // 型番情報の位置を求める
-            int startPos = (rctFinderPtn[fndPtnTopRight].X / modPxl) - 4;
+            int startPos = ((rctFinderPtn[fndPtnTopRight].X - rctFinderPtn[fndPtnTopLeft].X) / modPxl) - 4;
 
             int modCnt = 0;
             for (int cnt1 = 0; cnt1 < 6; cnt1++)
@@ -835,6 +843,7 @@ namespace QRCodeDecoder
                         // 型番情報１が訂正不能だった場合、型番情報２（左下の型番情報）より型番を決定する
                         verInfo[modCnt] = modAry[cnt1, cnt2 + startPos];
                     }
+                    modCnt++;
                 }
             }
 
@@ -849,11 +858,12 @@ namespace QRCodeDecoder
             qrMask = -1;
             qrErrLvl = -1;
 
-            // 形式情報１を復号する
+            // 基本仕様 12.j
+            // 形式情報１（左上）を復号する
             int fmtInfo = GetFormatInfo(1);
             if (fmtInfo < 0)
             {
-                // 形式情報２を復号する
+                // 形式情報１が訂正不能だった場合、形式情報２（右上＋左下）を復号する
                 fmtInfo = GetFormatInfo(2);
                 if (fmtInfo < 0) return;
             }
@@ -864,10 +874,45 @@ namespace QRCodeDecoder
             qrErrLvl = fmtInfo & 0x08;
         }
 
+        /// <summary>
+        /// 指定位置の形式情報を取得して復号する
+        /// </summary>
+        /// <param name="fKind"></param>
+        /// <returns></returns>
         private int GetFormatInfo(int fKind)
         {
+            int cur = 0;
+            bool[] fmtInfo = new bool[15];
 
-            return 0;
+            if (fKind == 1)
+            {
+                // 左上から取得
+                for (int cnt = 0; cnt < 6; cnt++)
+                {
+                    fmtInfo[cur] = modAry[8, cnt]; cur++;
+                }
+                fmtInfo[cur] = modAry[8, 7]; cur++;
+                fmtInfo[cur] = modAry[8, 8]; cur++;
+                fmtInfo[cur] = modAry[7, 8]; cur++;
+                for (int cnt = 5; cnt >= 0; cnt--)
+                {
+                    fmtInfo[cur] = modAry[cnt, 8]; cur++;
+                }
+            }
+            else
+            {
+                // 右上＋左下から取得
+                for (int cnt = qrCodeModNum; cnt >= qrCodeModNum - 7; cnt--)
+                {
+                    fmtInfo[cur] = modAry[cnt, 8]; cur++;
+                }
+                for (int cnt = qrCodeModNum - 6; cnt <= qrCodeModNum; cnt++)
+                {
+                    fmtInfo[cur] = modAry[8, cur]; cur++;
+                }
+            }
+
+            return DecodeFormatInfo(fmtInfo);
         }
         #endregion
         #endregion

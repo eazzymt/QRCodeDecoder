@@ -1,8 +1,15 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
 using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using QRCodeDecoder;
 
-namespace QRCodeDecoder
+namespace testForm
 {
     public partial class Form1 : Form
     {
@@ -38,19 +45,17 @@ namespace QRCodeDecoder
             }
 #endif
 
-            using (ClsQRDecorder objDecoder = new ClsQRDecorder(pbQrImg.ImageLocation))
+            using (ClsQRCodeDecorder objDecoder = new ClsQRCodeDecorder(pbQrImg.ImageLocation))
             {
-                if (objDecoder.JudgeQRPtn())
-                {
-                    objDecoder.Decode();
-
-                    ImageConverter imgCnv = new ImageConverter();
-                    pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.GetTestImg());
-                }
-                else
+                byte[] decodeData = objDecoder.Decode();
+                if (decodeData == null)
                 {
                     MessageBox.Show("判定：NG");
+                    return;
                 }
+
+                ImageConverter imgCnv = new ImageConverter();
+                pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.GetTestImg());
             }
 
 #if AAA
@@ -60,7 +65,6 @@ namespace QRCodeDecoder
                 pbQrImgMask.Image = (Image)imgCnv.ConvertFrom(objDecoder.GetTestImg());
             }
 #endif
-
         }
 
         private void btnSave_Click(object sender, EventArgs e)
