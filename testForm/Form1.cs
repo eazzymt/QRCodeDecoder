@@ -23,7 +23,7 @@ namespace testForm
         {
             using (OpenFileDialog ofd = new OpenFileDialog())
             {
-                ofd.Filter = "画像ファイル(*.jpg)|*.jpg";
+                ofd.Filter = "画像ファイル(*.bmp,*.png,*.jpg)|*.bmp;*.png;*.jpg";
                 ofd.Title = "開く画像ファイルを選択して下さい";
                 ofd.CheckFileExists = true;
                 ofd.CheckPathExists = true;

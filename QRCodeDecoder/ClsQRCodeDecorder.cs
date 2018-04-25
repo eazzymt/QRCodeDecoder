@@ -7,17 +7,54 @@ namespace QRCodeDecoder
     public class ClsQRCodeDecorder : IDisposable
     {
         #region 宣言
-        enum lblIdxEnum
+        private enum lblIdxEnum
         {
             posX = 0,
             posY,
             width,
             height
         }
-        enum scanDirEnum
+        private enum scanDirEnum
         {
             dirX,
             dirY
+        }
+        // エラー番号
+        public enum ErrNoEnum : int
+        {
+            emptyData = 1,
+            outOfVer = 2,
+            capOver = 3,
+
+            // 内部エラー(バグ？)
+            failGetModule = 100,
+            failMaskModule = 101,
+
+            normal = 0
+        }
+        // エラー訂正レベル
+        private enum ErrLevelEnum : int
+        {
+            l = 0,
+            m = 1,
+            q = 2,
+            h = 3,
+            na = -1
+        }
+        // モジュール取得方向
+        private enum DirEnum : int
+        {
+            down = 0,
+            up = 1,
+            right = 2,
+            left = 3
+        }
+        // モジュール設定値
+        private enum ModuleEnum : int
+        {
+            d0 = 0, // データ明モジュール
+            d1 = 1, // データ暗モジュール
+            f = 2   // その他、機能パターン(データ符号か領域が取れればよいので、詳細な区分は不要)
         }
 
         // 基本仕様 表D.1
@@ -25,7 +62,7 @@ namespace QRCodeDecoder
         // 有効ビット数：16bit
         // データビット：上位4bit
         // 誤り訂正ビット：下位12bit
-        int[] VerInfoAry = new int[] {
+        private readonly int[] VerInfoAry = new int[] {
             0x07C94,0x085BC,0x09A99,0x0A4D3, // 7～10
             0x0BBF6,0x0C762,0x0D847,0x0E60D,0x0F928,0x10B78,0x1145D,0x12A17,0x13532,0x149A6, // 11～20
             0x15683,0x168C9,0x177EC,0x18EC4,0x191E1,0x1AFAB,0x1B08E,0x1CC1A,0x1D33F,0x1ED75, // 21～30
@@ -37,15 +74,109 @@ namespace QRCodeDecoder
         // 有効ビット数：15bit
         // データビット：上位5bit
         // 誤り訂正ビット：下位10bit
-        int[] FmtInfoAry = new int[] {
-            0x0000,0x0537,0x0A6E,0x0F59,0x11EB,0x14DC,0x1B85,0x1EB2,
-            0x23D6,0x26E1,0x29B8,0x2C8F,0x323D,0x370A,0x3853,0x3D64,
-            0x429B,0x47AC,0x48F5,0x4DC2,0x5370,0x5647,0x591E,0x5C29,
-            0x614D,0x647A,0x6B23,0x6E14,0x70A6,0x7591,0x7AC8,0x7FFF
+        private readonly int[] FmtInfoAry = new int[] {
+            0x5412,0x5125,0x5E7C,0x5B4B,0x45F9,0x40CE,0x4F97,0x4AA0,
+            0x77C4,0x72F3,0x7DAA,0x789D,0x662F,0x6318,0x6C41,0x6976,
+            0x1689,0x13BE,0x1CE7,0x19D0,0x0762,0x0255,0x0D0C,0x083B,
+            0x355F,0x3068,0x3F31,0x3A06,0x24B4,0x2183,0x2EDA,0x2BED
+        };
+
+        // RSブロックごとのデータ容量(Byte)
+        // 誤り訂正レベル(L,M,Q,H)の[第１分割：分割ブロック数・総コード語数・データ容量、
+        //                           第２分割：分割ブロック数・総コード語数・データ容量]×型番１～４０
+
+        //---- 第１分割-------------------------------------------------,  第２分割-----------------------------------------------
+        //---- レベルL ------- レベルM ------- レベルQ ----- レベルH ---,  レベルL ----- レベルM ----- レベルQ ----- レベルH -----
+        private readonly int[, ,] RsBlockCapa = {
+        {{ 1,  26,  19}, { 0,   0,   0}, { 1, 26, 16}, { 0,  0,  0}, { 1, 26, 13}, { 0,  0,  0}, { 1, 26,  9}, { 0,   0,   0}},
+        {{ 1,  44,  34}, { 0,   0,   0}, { 1, 44, 28}, { 0,  0,  0}, { 1, 44, 22}, { 0,  0,  0}, { 1, 44, 16}, { 0,   0,   0}},
+        {{ 1,  70,  55}, { 0,   0,   0}, { 1, 70, 44}, { 0,  0,  0}, { 2, 35, 17}, { 0,  0,  0}, { 2, 35, 13}, { 0,   0,   0}},
+        {{ 1, 100,  80}, { 0,   0,   0}, { 2, 50, 32}, { 0,  0,  0}, { 2, 50, 24}, { 0,  0,  0}, { 4, 25,  9}, { 0,   0,   0}},
+        {{ 1, 134, 108}, { 0,   0,   0}, { 2, 67, 43}, { 0,  0,  0}, { 2, 33, 15}, { 2, 34, 16}, { 2, 33, 11}, { 2,  34,  12}},
+        {{ 2,  86,  68}, { 0,   0,   0}, { 4, 43, 27}, { 0,  0,  0}, { 4, 43, 19}, { 0,  0,  0}, { 4, 43, 15}, { 0,   0,   0}},
+        {{ 2,  98,  78}, { 0,   0,   0}, { 4, 49, 31}, { 0,  0,  0}, { 2, 32, 14}, { 4, 33, 15}, { 4, 39, 13}, { 1,  40,  14}},
+        {{ 2, 121,  97}, { 0,   0,   0}, { 2, 60, 38}, { 2, 61, 39}, { 4, 40, 18}, { 2, 41, 19}, { 4, 40, 14}, { 2,  41,  15}},
+        {{ 2, 146, 116}, { 0,   0,   0}, { 3, 58, 36}, { 2, 59, 37}, { 4, 36, 16}, { 4, 37, 17}, { 4, 36, 12}, { 4,  37,  13}},
+        {{ 2,  86,  68}, { 2,  87,  69}, { 4, 69, 43}, { 1, 70, 44}, { 6, 43, 19}, { 2, 44, 20}, { 6, 43, 15}, { 2,  44,  16}},
+        {{ 4, 101,  81}, { 0,   0,   0}, { 1, 80, 50}, { 4, 81, 51}, { 4, 50, 22}, { 4, 51, 23}, { 3, 36, 12}, { 8,  37,  13}},
+        {{ 2, 116,  92}, { 2, 117,  93}, { 6, 58, 36}, { 2, 59, 37}, { 4, 46, 20}, { 6, 47, 21}, { 7, 42, 14}, { 4,  43,  15}},
+        {{ 4, 133, 107}, { 0,   0,   0}, { 8, 59, 37}, { 1, 60, 38}, { 8, 44, 20}, { 4, 45, 21}, {12, 33, 11}, { 4,  34,  12}},
+        {{ 3, 145, 115}, { 1, 146, 116}, { 4, 64, 40}, { 5, 65, 41}, {11, 36, 16}, { 5, 37, 17}, {11, 36, 12}, { 5,  37,  13}},
+        {{ 5, 109,  87}, { 1, 110,  88}, { 5, 65, 41}, { 5, 66, 42}, { 5, 54, 24}, { 7, 55, 25}, {11, 36, 12}, { 7,  37,  13}},
+        {{ 5, 122,  98}, { 1, 123,  99}, { 7, 73, 45}, { 3, 74, 46}, {15, 43, 19}, { 2, 44, 20}, { 3, 45, 15}, {13,  46,  16}},
+        {{ 1, 135, 107}, { 5, 136, 108}, {10, 74, 46}, { 1, 75, 47}, { 1, 50, 22}, {15, 51, 23}, { 2, 42, 14}, {17,  43,  15}},
+        {{ 5, 150, 120}, { 1, 151, 121}, { 9, 69, 43}, { 4, 70, 44}, {17, 50, 22}, { 1, 51, 23}, { 2, 42, 14}, {19,  43,  15}},
+        {{ 3, 141, 113}, { 4, 142, 114}, { 3, 70, 44}, {11, 71, 45}, {17, 47, 21}, { 4, 48, 22}, { 9, 39, 13}, {16,  40,  14}},
+        {{ 3, 135, 107}, { 5, 136, 108}, { 3, 67, 41}, {13, 68, 42}, {15, 54, 24}, { 5, 55, 25}, {15, 43, 15}, {10,  44,  16}},
+        {{ 4, 144, 116}, { 4, 145, 117}, {17, 68, 42}, { 0,  0,  0}, {17, 50, 22}, { 6, 51, 23}, {19, 46, 16}, { 6,  47,  17}},
+        {{ 2, 139, 111}, { 7, 140, 112}, {17, 74, 46}, { 0,  0,  0}, { 7, 54, 24}, {16, 55, 25}, {34, 37, 13}, { 4, 151, 121}},
+        {{ 4, 151, 121}, { 5, 152, 122}, { 4, 75, 47}, {14, 76, 48}, {11, 54, 24}, {14, 55, 25}, {16, 45, 15}, {14,  46,  16}},
+        {{ 6, 147, 117}, { 4, 148, 118}, { 6, 73, 45}, {14, 74, 46}, {11, 54, 24}, {16, 55, 25}, {30, 46, 16}, {2,   47,  17}},
+        {{ 8, 132, 106}, { 4, 133, 107}, { 8, 75, 47}, {13, 76, 48}, { 7, 54, 24}, {22, 55, 25}, {22, 45, 15}, {13,  46,  16}},
+        {{10, 142, 114}, { 2, 143, 115}, {19, 74, 46}, { 4, 75, 47}, {28, 50, 22}, { 6, 51, 23}, {33, 46, 16}, { 4,  47,  17}},
+        {{ 8, 152, 122}, { 4, 153, 123}, {22, 73, 45}, { 3, 74, 46}, { 8, 53, 23}, {26, 54, 24}, {12, 45, 15}, {28 , 46,  16}},
+        {{ 3, 147, 117}, {10, 148, 118}, { 3, 73, 45}, {23, 74, 46}, { 4, 54, 24}, {31, 55, 25}, {11, 45, 15}, {31,  46,  16}},
+        {{ 7, 146, 116}, { 7, 147, 117}, { 21,73, 45}, { 7, 74, 46}, { 1, 53, 23}, {37, 54, 24}, {19, 45, 15}, {26,  46,  16}},
+        {{ 5, 145, 115}, {10, 146, 116}, {19, 75, 47}, {10, 76, 48}, {15, 54, 24}, {25, 55, 25}, {23, 45, 15}, {25,  46,  16}},
+        {{13, 145, 115}, { 3, 146, 116}, { 2, 74, 46}, {29, 75, 47}, {42, 54, 24}, { 1, 55, 25}, {23, 45, 15}, {28,  46,  16}},
+        {{17, 145, 115}, { 0,   0,   0}, {10, 74, 46}, {23, 75, 47}, {10, 54, 24}, {35, 55, 25}, {19, 45, 15}, {35,  46,  16}},
+        {{17, 145, 115}, { 1, 146, 116}, {14, 74, 46}, {21, 75, 47}, {29, 54, 24}, {19, 55, 25}, {11, 45, 15}, {46,  46,  16}},
+        {{13, 145, 115}, { 6, 146, 116}, {14, 74, 46}, {23, 75, 47}, {44, 54, 24}, { 7, 55, 25}, {59, 46, 16}, { 1,  47,  17}},
+        {{12, 151, 121}, { 7, 152, 122}, {12, 75, 47}, {26, 76, 48}, {39, 54, 24}, {14, 55, 25}, {22, 45, 15}, {41,  46,  16}},
+        {{ 6, 151, 121}, {14, 152, 122}, { 6, 75, 47}, {34, 76, 48}, {46, 54, 24}, {10, 55, 25}, { 2, 45, 15}, {64,  46,  16}},
+        {{17, 152, 122}, { 4, 153, 123}, {29, 74, 46}, {14, 75, 47}, {49, 54, 24}, {10, 55, 25}, {24, 45, 15}, {46,  46,  16}},
+        {{ 4, 152, 122}, {18, 153, 123}, {13, 74, 46}, {32, 75, 47}, {48, 54, 24}, {14, 55, 25}, {42, 45, 15}, {32,  46,  16}},
+        {{20, 147, 117}, { 4, 148, 118}, {40, 75, 47}, { 7, 76, 48}, {43, 54, 24}, {22, 55, 25}, {10, 45, 15}, {67,  46,  16}},
+        {{19, 148, 118}, { 6, 149, 119}, {18, 75, 47}, {31, 76, 48}, {34, 54, 24}, {34, 55, 25}, {20, 45, 15}, {61,  46,  16}}
+        };
+
+        // 型番ごとの位置合わせパターン設置個所
+        // 附属書Eには中心座標が記載されているが、実装には使いづらいので左上の座標を記載した
+        private readonly int[][] AdjPosPtn = {
+            new int[] {0,0},
+            new int[] {4, 16},
+            new int[] {4, 20},
+            new int[] {4, 24},
+            new int[] {4, 28},
+            new int[] {4, 32},
+            new int[] {4, 20},
+            new int[] {4, 22, 40},
+            new int[] {4, 24, 44},
+            new int[] {4, 26, 48},
+            new int[] {4, 28, 52},
+            new int[] {4, 30, 56},
+            new int[] {4, 32,60},
+            new int[] {4,24,44,64},
+            new int[] {4,24,46,68},
+            new int[] {4,24,48,72},
+            new int[] {4,28,52,76},
+            new int[] {4,28,54,80},
+            new int[] {4,28,56,84},
+            new int[] {4,32,60,88},
+            new int[] {4,26,48,70,92},
+            new int[] {4,24,48,72,96},
+            new int[] {4,28,52,76,100},
+            new int[] {4,26,52,78,104},
+            new int[] {4,30,56,82,108},
+            new int[] {4,28,56,84,112},
+            new int[] {4,32,60,88,116},
+            new int[] {4,24,48,72,96,120},
+            new int[] {4,28,52,76,100,124},
+            new int[] {4,24,50,76,102,128},
+            new int[] {4,28,54,80,106,132},
+            new int[] {4,32,58,84,110,136},
+            new int[] {4,28,56,84,112,140},
+            new int[] {4,32,60,88,116,144},
+            new int[] {4,28,52,76,100,124,148},
+            new int[] {4,22,48,74,100,126,152},
+            new int[] {4,26,52,78,104,130,156},
+            new int[] {4,30,56,82,108,134,160},
+            new int[] {4,24,52,80,108,136,164},
+            new int[] {4,28,56,84,112,140,168}
         };
 
         private const int quietPxl = 10;
-        private const int FmtInfoMask = 0x5413;
+        private const int FmtInfoMask = 0x5412;
         private string imgPath;
         private int modPxl;
         private int fndPtnTopLeft;
@@ -57,8 +188,7 @@ namespace QRCodeDecoder
         private int qrPxl;
         private int qrVer;
         private int qrMask;
-        private int qrErrLvl;
-        private byte[] encodeData;
+        private ErrLevelEnum qrErrLvl;
         private byte modBlk = 0; // 白黒反転画像の場合、255(白)を暗とする
 
         private Mat matQr;
@@ -66,6 +196,8 @@ namespace QRCodeDecoder
         private bool[,] modAry;
 
         private int errRange = 0;
+
+        public ErrNoEnum errNo;
         #endregion
 
         #region コンストラクタ・デストラクタ
@@ -78,6 +210,7 @@ namespace QRCodeDecoder
             this.imgPath = imgPath;
             matQr = null;
             rctFinderPtn = new Rect[3];
+            errNo = ErrNoEnum.normal;
         }
 
         /// <summary>
@@ -157,6 +290,7 @@ namespace QRCodeDecoder
 
             // 基本情報 12.y
             // 符号化領域のデータを取得してマスクパターンにてマスク解除する
+            byte[] unMaskedData = UnMaskData();
 
             qrDecodeData = new byte[1];
             return qrDecodeData;
@@ -693,7 +827,7 @@ namespace QRCodeDecoder
         }
         #endregion
 
-        #region エラー訂正符号(BCH)
+        #region エラー訂正符号の復号(BCH)
         /// <summary>
         /// 型番情報を復号
         /// </summary>
@@ -728,7 +862,7 @@ namespace QRCodeDecoder
         /// <summary>
         /// 形式情報を復号
         /// </summary>
-        /// <param name="fmtInfo"></param>
+        /// <param name="fmtInfo">要素０が最下位ビット</param>
         /// <returns></returns>
         private int DecodeFormatInfo(bool[] fmtInfo)
         {
@@ -748,7 +882,7 @@ namespace QRCodeDecoder
                 int errCnt = FmtInfoAry[cnt] ^ fmtVal;
                 if (countBits(errCnt) < 4)
                 {
-                    return FmtInfoAry[cnt] >> 10;
+                    return FmtInfoAry[cnt];
                 }
             }
 
@@ -856,7 +990,7 @@ namespace QRCodeDecoder
         private void GetFormatInfo()
         {
             qrMask = -1;
-            qrErrLvl = -1;
+            qrErrLvl = ErrLevelEnum.na;
 
             // 基本仕様 12.j
             // 形式情報１（左上）を復号する
@@ -870,8 +1004,25 @@ namespace QRCodeDecoder
 
             // マスクを外して、マスクパターン、誤り訂正レベルを取得
             fmtInfo ^= FmtInfoMask;
-            qrMask = fmtInfo >> 3;
-            qrErrLvl = fmtInfo & 0x08;
+            qrMask = (fmtInfo >> 10) & 7;
+            int tmp = fmtInfo >> 13;
+            if (tmp == 0)
+            {
+                qrErrLvl = ErrLevelEnum.m;
+            }
+            else if (tmp == 1)
+            {
+                qrErrLvl = ErrLevelEnum.h;
+            }
+            else if (tmp == 2)
+            {
+                qrErrLvl = ErrLevelEnum.l;
+            }
+            else
+            {
+                // 2bitデータなので、残りは3のみ
+                qrErrLvl = ErrLevelEnum.q;
+            }
         }
 
         /// <summary>
@@ -902,17 +1053,193 @@ namespace QRCodeDecoder
             else
             {
                 // 右上＋左下から取得
-                for (int cnt = qrCodeModNum; cnt >= qrCodeModNum - 7; cnt--)
+                for (int cnt = qrCodeModNum - 1; cnt >= qrCodeModNum - 8; cnt--)
                 {
                     fmtInfo[cur] = modAry[cnt, 8]; cur++;
                 }
-                for (int cnt = qrCodeModNum - 6; cnt <= qrCodeModNum; cnt++)
+                for (int cnt = qrCodeModNum - 7; cnt < qrCodeModNum; cnt++)
                 {
                     fmtInfo[cur] = modAry[8, cur]; cur++;
                 }
             }
 
             return DecodeFormatInfo(fmtInfo);
+        }
+
+        /// <summary>
+        /// マスクパターンを利用して符号化領域のマスクを解除したバイト列を返す
+        /// </summary>
+        /// <returns></returns>
+        private byte[] UnMaskData()
+        {
+            byte[] allData;
+
+            // 符号化領域と、機能コードを明確にする
+            // 先ずは符号化領域として初期化
+            ModuleEnum[,] modClsAry = new ModuleEnum[qrCodeModNum, qrCodeModNum];
+            for (int cntX = 0; cntX < qrCodeModNum; cntX++)
+            {
+                for (int cntY = 0; cntY < qrCodeModNum; cntY++)
+                {
+                    modClsAry[cntX, cntY] = modAry[cntX, cntY] ? ModuleEnum.d1 : ModuleEnum.d1;
+                }
+            }
+            // 順次、機能コード部分を設定
+            // 位置検出パターン（周囲の明モジュールを含む）
+            for (int cntX = 0; cntX < 8; cntX++)
+            {
+                for (int cntY = 0; cntY < 8; cntY++)
+                {
+                    modClsAry[cntX, cntY] = ModuleEnum.f; // 左上
+                    modClsAry[cntX + qrCodeModNum - 8, cntY] = ModuleEnum.f; // 右上
+                    modClsAry[cntX, cntY + qrCodeModNum - 8] = ModuleEnum.f; // 左下
+                }
+            }
+            // 形式情報（一部、タイミングパターンとダブるが、気にしない）
+            for (int cntY = 0; cntY < 8; cntY++)
+            {
+                modClsAry[8, cntY] = ModuleEnum.f; // 左上
+                modClsAry[8, cntY + qrCodeModNum - 8] = ModuleEnum.f; // 右上
+            }
+            for (int cntX = 7; cntX >= 0; cntX--)
+            {
+                modClsAry[cntX, 8] = ModuleEnum.f; // 左上
+                modClsAry[cntX + qrCodeModNum - 8, 8] = ModuleEnum.f; // 左下
+            }
+            if (qrVer >= 2)
+            {
+                // 位置合せパターン
+                int len = AdjPosPtn[qrVer - 1].Length;
+                for (int idxX = 0; idxX < len; idxX++)
+                {
+                    for (int idxY = 0; idxY < len; idxY++)
+                    {
+                        int stX = AdjPosPtn[qrVer - 1][idxX];
+                        int stY = AdjPosPtn[qrVer - 1][idxY];
+                        for (int cntX = 0; cntX < 5; cntX++)
+                        {
+                            for (int cntY = 0; cntY < 5; cntY++)
+                            {
+                                modClsAry[stX + cntX, stY + cntY] = ModuleEnum.f;
+                            }
+                        }
+                    }
+                }
+            }
+            if (qrVer >= 7)
+            {
+                // 型番情報
+                for (int cnt1 = 0; cnt1 < 6; cnt1++)
+                {
+                    for (int cnt2 = 0; cnt2 < 3; cnt2++)
+                    {
+                        modClsAry[cnt2 + qrCodeModNum - 11, cnt1] = ModuleEnum.f; // 右上
+                        modClsAry[cnt1, cnt2 + qrCodeModNum - 11] = ModuleEnum.f; // 左下
+                    }
+                }
+            }
+            // タイミングパターン
+            for (int cnt = 8; cnt < qrCodeModNum - 8; cnt++)
+            {
+                modClsAry[7, cnt] = ModuleEnum.f; // 左上～左下
+                modClsAry[cnt, 7] = ModuleEnum.f; // 左上～右上
+            }
+
+            // 型番からバイト長を算出して、領域確保
+            int allDataLen = RsBlockCapa[qrVer, (int)qrErrLvl, 0] + RsBlockCapa[qrVer,(int)qrErrLvl, 1];
+            allData = new byte[allDataLen];
+
+            int baseX = qrCodeModNum - 1;
+            int x = baseX + 1;
+            int y = qrCodeModNum;
+            DirEnum dir = DirEnum.up;
+
+            for (int cntDt = 0; cntDt < allDataLen; cntDt++)
+            {
+                byte byteItem = 0;
+
+                for (int cntWd = 0; cntWd < 8; cntWd++)
+                {
+                    ModuleEnum binData = ModuleEnum.f;
+
+                    // 設置位置を探す
+                    do
+                    {
+                        if (x == baseX)
+                        {
+                            // 隣の列へ
+                            x--;
+                        }
+                        else
+                        {
+                            x = baseX;
+                            if (dir == DirEnum.up)
+                            {
+                                // １つ上の行に行けるか確認
+                                if (y == 0)
+                                {
+                                    // 上限までたどり着いたので、方向転換して次の列へ
+                                    dir = DirEnum.down;
+                                    baseX -= 2;
+                                    if (baseX == 6) baseX = 5; // タイミングパターン列を飛ばす
+                                    x = baseX;
+                                    if (baseX < 0)
+                                    {
+                                        // なんかおかしい
+                                        errNo = ErrNoEnum.failGetModule;
+                                        return null;
+                                    }
+                                }
+                                else
+                                {
+                                    y--;
+                                }
+                            }
+                            else
+                            {
+                                // １つ下の行に行けるか確認
+                                if (y + 1 > qrCodeModNum)
+                                {
+                                    // 下限までたどり着いたので、方向転換して次の列へ
+                                    dir = DirEnum.up;
+                                    baseX -= 2;
+                                    if (baseX == 6) baseX = 5; // タイミングパターン列を飛ばす
+                                    x = baseX;
+                                    if (baseX < 0)
+                                    {
+                                        // なんかおかしい
+                                        errNo = ErrNoEnum.failGetModule;
+                                        return null;
+                                    }
+                                }
+                                else
+                                {
+                                    y++;
+                                }
+                            }
+                        }
+                        if (0 <= x && x < qrCodeModNum &&
+                            0 <= y && y < qrCodeModNum &&
+                            modClsAry[x, y] != ModuleEnum.f)
+                        {
+                            // モジュール取得
+                            binData = modClsAry[x, y];
+                            break;
+                        }
+                    } while (x>=0 && y<qrCodeModNum); // 左下でおしまい
+                    // MSBからもらう
+                    if (binData == ModuleEnum.f)
+                    {
+                        // データをもらえずに最後（左下）まで行き着いた
+                        errNo = ErrNoEnum.failGetModule;
+                        return null;
+                    }
+                    byteItem = (byte)(byteItem << cntWd);
+                }
+                allData[cntDt] = byteItem;
+            }
+
+            return allData;
         }
         #endregion
         #endregion
